@@ -1,0 +1,189 @@
+if (process.argv.includes('--mode=dev')) {
+	process.env.NODE_ENV = 'development'
+} else {
+	process.env.NODE_ENV = 'production'
+}
+
+process.env.FLAVOR ??= `local`
+
+import * as esbuild from 'esbuild'
+import importGlobPlugin from 'esbuild-plugin-import-glob'
+import inlineImage from 'esbuild-plugin-inline-image'
+import * as fs from 'fs'
+import vsCodeProblemsPatchPlugin from 'node-modules-vscode-problems-patch'
+import path from 'path'
+import svelteConfig from '../svelte.config.js'
+import importFolderPlugin from './esbuild-plugins/importFolder.js'
+import pluginPackagerPlugin from './esbuild-plugins/pluginPackager.js'
+import sveltePlugin from './esbuild-plugins/svelte'
+
+const PACKAGE = JSON.parse(fs.readFileSync('./package.json', 'utf-8'))
+
+const INFO_PLUGIN: esbuild.Plugin = {
+	name: 'infoPlugin',
+	setup(build) {
+		let start = Date.now()
+		build.onStart(() => {
+			console.log('\u{1F528} Building...')
+			start = Date.now()
+		})
+
+		build.onEnd(result => {
+			const end = Date.now()
+			const diff = end - start
+			console.log(
+				`\u{2705} Build completed in ${diff}ms with ${result.warnings.length} warning${
+					result.warnings.length == 1 ? '' : 's'
+				} and ${result.errors.length} error${result.errors.length == 1 ? '' : 's'}.`
+			)
+		})
+	},
+}
+
+const DEPENDENCY_QUARKS: esbuild.Plugin = {
+	name: 'dependency-quarks',
+	setup(build) {
+		build.onResolve({ filter: /^three/ }, args => {
+			if (args.path === 'three') {
+				return { path: 'three', external: true }
+			} else {
+				return {
+					path: require.resolve(args.path),
+				}
+			}
+		})
+		build.onResolve({ filter: /^deepslate\// }, args => {
+			// esbuild respects the package.json "exports" field
+			// but the version of typescript we're using doesn't
+			// so we need to resolve the path manually
+			const filePath = path.resolve(
+				process.cwd(),
+				path.dirname(require.resolve('deepslate')),
+				'..',
+				args.path.split('/').slice(1).join('/'),
+				'index.js'
+			)
+			return {
+				path: filePath,
+			}
+		})
+	},
+}
+
+function createBanner() {
+	const license = fs.readFileSync('./LICENSE').toString()
+	let lines: string[] = [
+		`${PACKAGE.name as string} v${PACKAGE.version as string}`,
+		``,
+		PACKAGE.description,
+		``,
+		`Created by ${PACKAGE.author.name as string}`,
+		`(${PACKAGE.author.email as string}) [${PACKAGE.author.url as string}]`,
+		``,
+		`[ SOURCE ]`,
+		`${PACKAGE.repository.url as string}`,
+		``,
+		`[ LICENSE ]`,
+		...license.split('\n').map(v => v.trim()),
+	]
+
+	const maxLength = Math.max(...lines.map(line => line.length))
+
+	const leftBuffer = Math.floor(maxLength / 2)
+	const rightBuffer = Math.ceil(maxLength / 2)
+
+	const header = '╭' + `─`.repeat(maxLength + 2) + '╮'
+	const footer = '╰' + `─`.repeat(maxLength + 2) + '╯'
+
+	lines = lines.map(v => {
+		const div = v.length / 2
+		const l = Math.ceil(leftBuffer - div)
+		const r = Math.floor(rightBuffer - div)
+		return '│ ' + ' '.repeat(l) + v + ' '.repeat(r) + ' │'
+	})
+
+	const banner = '\n' + [header, ...lines, footer].map(v => `//?? ${v}`).join('\n') + '\n'
+
+	return {
+		js: banner,
+	}
+}
+
+const DEFINES: Record<string, string> = {}
+
+Object.entries(process.env).forEach(([key, value]) => {
+	if (/[^A-Za-z0-9_]/i.exec(key)) return
+	DEFINES[`process.env.${key}`] = JSON.stringify(value)
+})
+
+const COMMON_CONFIG: esbuild.BuildOptions = {
+	banner: createBanner(),
+	entryPoints: ['./src/index.ts'],
+	outfile: `./dist/${PACKAGE.name as string}.js`,
+	bundle: true,
+	platform: 'browser',
+	loader: { '.svg': 'dataurl', '.ttf': 'binary', '.mcb': 'text' },
+	plugins: [
+		vsCodeProblemsPatchPlugin(),
+		importFolderPlugin,
+		importGlobPlugin(),
+		inlineImage({
+			limit: -1,
+		}),
+		INFO_PLUGIN,
+		sveltePlugin(svelteConfig),
+		pluginPackagerPlugin(),
+		DEPENDENCY_QUARKS,
+	],
+	alias: { svelte: 'svelte' },
+	format: 'iife',
+	define: DEFINES,
+	treeShaking: true,
+}
+
+const DEV_CONFIG: esbuild.BuildOptions = {
+	...COMMON_CONFIG,
+	minify: false,
+	platform: 'browser',
+	sourcemap: 'inline',
+	sourceRoot: 'http://animated-java/',
+}
+
+const PROD_CONFIG: esbuild.BuildOptions = {
+	...COMMON_CONFIG,
+	minify: true,
+	keepNames: true,
+	platform: 'browser',
+	drop: ['debugger'],
+	treeShaking: true,
+	metafile: true,
+}
+
+async function buildDev() {
+	const ctx = await esbuild.context(DEV_CONFIG)
+	await ctx.watch()
+}
+
+async function buildProd() {
+	const result = await esbuild.build(PROD_CONFIG).catch(() => process.exit(1))
+	if (result.errors.length > 0) {
+		console.error(result.errors)
+		process.exit(1)
+	}
+	if (result.warnings.length > 0) {
+		console.warn(result.warnings)
+	}
+	fs.writeFileSync('./dist/meta.json', JSON.stringify(result.metafile, null, '\t'))
+}
+
+async function main() {
+	// Clean the dist folder
+	fs.rmSync('dist', { recursive: true, force: true })
+	if (process.env.NODE_ENV === 'development') {
+		await buildDev()
+		return
+	}
+	await buildProd()
+}
+
+void main()

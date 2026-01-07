@@ -1,0 +1,28 @@
+{
+	"include": ["./src/**/*", "./.scripts/**/*", "./eslint.config.ts", "./tests/**/*"],
+	"exclude": ["**/node_modules/**"],
+	"compilerOptions": {
+		"outDir": "./dist/",
+		"noImplicitAny": true,
+		"module": "ES2022",
+		"target": "ES2022",
+		"moduleResolution": "node",
+		"strict": true,
+		"types": ["node"],
+		"resolveJsonModule": true,
+		"allowSyntheticDefaultImports": true,
+		"allowUmdGlobalAccess": true,
+		"allowUnreachableCode": true,
+		"esModuleInterop": true,
+		"noEmit": true,
+		"verbatimModuleSyntax": true,
+		"isolatedModules": true,
+		"alwaysStrict": true,
+		"experimentalDecorators": true,
+		"paths": {
+			"@components/*": ["./src/svelte-components/*"],
+			"@assets/*": ["./src/assets/*"],
+			"@package": ["./package.json"]
+		}
+	}
+}
